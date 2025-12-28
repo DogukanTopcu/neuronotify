@@ -9,6 +9,7 @@ Baselines:
     1. RandomAgent: Sends notifications with a fixed probability
     2. EveningOnlyAgent: Static schedule (sends only during evening hours)
     3. ActivityTriggeredAgent: Sends when user is awake and not working
+    4. OracleAgent: Uses ground-truth click probability from environment
 """
 
 from typing import Optional
@@ -166,4 +167,44 @@ class OptimalStaticAgent(BaselineAgent):
             hour = info['hour']
             if hour in self.optimal_hours:
                 return 1
+        return 0
+
+
+class OracleAgent(BaselineAgent):
+    """
+    Oracle baseline: Uses ground-truth click probability to make decisions.
+    
+    This agent represents the theoretical upper bound of performance.
+    It has access to the internal environment state (click_probability)
+    and sends a notification only if the expected reward is positive.
+    
+    Expected Reward = P(click) * reward_click + (1 - P(click)) * reward_ignore
+    With default rewards (+10, -3), threshold is ~0.23 click probability.
+    """
+    
+    def __init__(self, threshold: float = 0.23, min_recency_hours: int = 6):
+        """
+        Initialize oracle agent.
+        
+        Args:
+            threshold: Minimum click probability to trigger notification
+            min_recency_hours: Minimum hours between notifications to avoid annoyance
+        """
+        self.threshold = threshold
+        self.min_recency_hours = min_recency_hours
+        
+    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+        """
+        Send if ground-truth click probability exceeds the threshold
+        and recency constraint is met.
+        """
+        if info is None:
+            return 0
+            
+        # Oracle uses ground-truth probability
+        click_prob = info.get('click_probability', 0.0)
+        hours_since_send = info.get('hours_since_send', 0)
+        
+        if click_prob > self.threshold and hours_since_send >= self.min_recency_hours:
+            return 1
         return 0

@@ -149,15 +149,27 @@ def plot_behavioral_heatmap(
             norm_recency = min(recency, MAX_RECENCY) / MAX_RECENCY
             norm_annoyance = min(annoyance, MAX_ANNOYANCE) / MAX_ANNOYANCE
             
-            # One-hot encode the user_id
-            user_ohe = np.zeros(num_users, dtype=np.float32)
-            if user_profile and 0 <= user_profile.user_id < num_users:
-                user_ohe[user_profile.user_id] = 1.0
+            # Behavioral features (defaults for heatmap)
+            # In a real scenario, these could be parameters, but for generic heatmap 
+            # we assume the user is awake and not working to see peak potential.
+            is_working = 0.0
+            is_awake = 1.0
             
-            state = np.concatenate([
-                [norm_hour, norm_day, norm_recency, norm_annoyance],
-                user_ohe
-            ]).astype(np.float32)
+            # Construct state based on feature count
+            base_features = [norm_hour, norm_day, norm_recency, norm_annoyance]
+            
+            if num_users > 0:
+                # OHE mode: [base, is_working, is_awake, user_ohe]
+                user_ohe = np.zeros(num_users, dtype=np.float32)
+                if user_profile and 0 <= user_profile.user_id < num_users:
+                    user_ohe[user_profile.user_id] = 1.0
+                state = np.concatenate([base_features, [is_working, is_awake], user_ohe]).astype(np.float32)
+            else:
+                # POMDP mode: [base, is_working, is_awake]
+                state = np.array(base_features + [is_working, is_awake], dtype=np.float32)
+            
+            # Compatibility check for older environments (Exp 1/2) if needed
+            # But here we assume the new structure
             
             q_values = agent.get_q_values(state)
             q_matrix[i, j] = q_values[1]

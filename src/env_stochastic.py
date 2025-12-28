@@ -110,19 +110,30 @@ class StochasticNotificationEnv(NotificationEnv):
             seed=seed
         )
         
-        # Override observation space if POMDP mode
-        if not self.include_user_id:
-            # State: [norm_hour, norm_day, norm_recency, norm_annoyance, is_working, is_awake]
+        # Override observation space to include behavioral features (is_working, is_awake)
+        if self.include_user_id:
+            # State: [norm_hour, norm_day, norm_recency, norm_annoyance, is_working, is_awake, user_ohe...]
+            # Shape: 4 (base) + 2 (behavioral) + num_users (OHE)
             self.observation_space = spaces.Box(
                 low=0.0,
                 high=1.0,
-                shape=(6,),  # 4 continuous + 2 binary features
+                shape=(6 + self.num_users,), 
+                dtype=np.float32
+            )
+        else:
+            # State: [norm_hour, norm_day, norm_recency, norm_annoyance, is_working, is_awake]
+            # Shape: 4 (base) + 2 (behavioral)
+            self.observation_space = spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(6,), 
                 dtype=np.float32
             )
         
         # Track episode-specific sampled schedule
         self._episode_wake_hour: int = user_profile.wake_hour
         self._episode_sleep_hour: int = user_profile.sleep_hour
+        self._consecutive_ignores: int = 0
         
     def _get_state(self) -> np.ndarray:
         """
@@ -139,17 +150,20 @@ class StochasticNotificationEnv(NotificationEnv):
         
         base_features = [norm_hour, norm_day, norm_recency, norm_annoyance]
         
+        # Always include behavioral features to ensure OHE has at least as much info as POMDP
+        is_working = 1.0 if self.user_profile.is_working(self._current_hour) else 0.0
+        is_awake = 1.0 if self._is_awake_current_episode(self._current_hour) else 0.0
+        context_features = base_features + [is_working, is_awake]
+        
         if self.include_user_id:
-            # Standard mode: include OHE
+            # Standard mode: include OHE + context
             user_ohe = np.zeros(self.num_users, dtype=np.float32)
             if 0 <= self.user_profile.user_id < self.num_users:
                 user_ohe[self.user_profile.user_id] = 1.0
-            return np.concatenate([base_features, user_ohe]).astype(np.float32)
+            return np.concatenate([context_features, user_ohe]).astype(np.float32)
         else:
-            # POMDP mode: include behavioral features instead
-            is_working = 1.0 if self.user_profile.is_working(self._current_hour) else 0.0
-            is_awake = 1.0 if self._is_awake_current_episode(self._current_hour) else 0.0
-            return np.array(base_features + [is_working, is_awake], dtype=np.float32)
+            # POMDP mode: just context
+            return np.array(context_features, dtype=np.float32)
     
     def _is_awake_current_episode(self, hour: int) -> bool:
         """
@@ -179,6 +193,33 @@ class StochasticNotificationEnv(NotificationEnv):
         
         return prob
         
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        """
+        Execute one step with non-linear strike-based rewards.
+        """
+        # Call parent generic step
+        state, reward, terminated, truncated, info = super().step(action)
+        
+        # Implement Strike System (Non-Linear Penalty)
+        if action == 1:
+            if not info.get('clicked', False):
+                self._consecutive_ignores += 1
+                # Strikes escalate penalties more than simple linear annoyance
+                if self._consecutive_ignores >= 3:
+                    reward = self.reward_churn
+                    terminated = True
+                    info['churned'] = True
+                    info['strike_out'] = True
+            else:
+                self._consecutive_ignores = 0
+        
+        # Enhanced info for Oracle and visualization
+        info['is_awake'] = self._is_awake_current_episode(self._current_hour)
+        info['is_working'] = self.user_profile.is_working(self._current_hour)
+        info['consecutive_ignores'] = self._consecutive_ignores
+        
+        return self._get_state(), reward, terminated, truncated, info
+
     def reset(
         self,
         *,
@@ -202,6 +243,7 @@ class StochasticNotificationEnv(NotificationEnv):
         # Add schedule info to returned info dict
         info['episode_wake_hour'] = self._episode_wake_hour
         info['episode_sleep_hour'] = self._episode_sleep_hour
+        self._consecutive_ignores = 0
         
         # Regenerate state with correct observation space
         return self._get_state(), info
