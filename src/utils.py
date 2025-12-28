@@ -230,6 +230,9 @@ def evaluate_agent(
         if user_profiles:
             options["user_profile"] = np.random.choice(user_profiles)
 
+        if hasattr(agent, "reset_hidden"):
+            agent.reset_hidden()
+
         state, _ = env.reset(options=options)
         episode_reward = 0.0
         done = False

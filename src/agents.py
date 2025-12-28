@@ -25,10 +25,11 @@ from collections import deque
 from typing import Tuple, List, Optional, Union
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 import torch.optim as optim
 
-from .networks import QNetwork, get_device
+from .networks import QNetwork, DRQNetwork, get_device
 
 
 class ReplayBuffer:
@@ -365,3 +366,207 @@ class DQNAgent:
         self.epsilon = checkpoint['epsilon']
         self.training_steps = checkpoint['training_steps']
         self.loss_history = checkpoint.get('loss_history', [])
+
+
+
+class EpisodeReplayBuffer:
+    """
+    Episode-based Replay Buffer for DRQN.
+    
+    Stores full episodes as lists of transitions. During sampling, it extracts
+    random fixed-length sequences from random episodes. This is necessary for
+    training recurrent networks (LSTMs) which require sequential data.
+    """
+    
+    def __init__(self, capacity: int = 500):
+        """
+        Initialize the episode buffer.
+        
+        Args:
+            capacity: Maximum number of episodes to store
+        """
+        self.capacity = capacity
+        self.buffer = deque(maxlen=capacity)
+        
+    def push(self, episode: List[tuple]) -> None:
+        """Add a complete episode to the buffer."""
+        self.buffer.append(episode)
+        
+    def sample(self, batch_size: int, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sample a batch of sequences from the buffer.
+        
+        Args:
+            batch_size: Number of sequences to sample
+            seq_len: Length of each sequence
+            
+        Returns:
+            Tensors of shape (batch, seq_len, ...)
+        """
+        sampled_episodes = random.sample(self.buffer, batch_size)
+        
+        batch_states = []
+        batch_actions = []
+        batch_rewards = []
+        batch_next_states = []
+        batch_dones = []
+        
+        for ep in sampled_episodes:
+            # Sample a random start point within the episode
+            # If episode is shorter than seq_len, we would need padding
+            # But here MAX_STEPS is 168 and we usually use seq_len 8-32
+            if len(ep) <= seq_len:
+                start_idx = 0
+                seq = ep
+            else:
+                start_idx = random.randint(0, len(ep) - seq_len)
+                seq = ep[start_idx : start_idx + seq_len]
+            
+            states, actions, rewards, next_states, dones = zip(*seq)
+            
+            batch_states.append(np.array(states, dtype=np.float32))
+            batch_actions.append(np.array(actions, dtype=np.int64))
+            batch_rewards.append(np.array(rewards, dtype=np.float32))
+            batch_next_states.append(np.array(next_states, dtype=np.float32))
+            batch_dones.append(np.array(dones, dtype=np.float32))
+            
+        # Note: If episodes were variable length and potentially shorter than seq_len,
+        # we would need to pad here. For simplicity, we assume len(ep) >= seq_len.
+        
+        return (
+            torch.FloatTensor(np.array(batch_states)),
+            torch.LongTensor(np.array(batch_actions)),
+            torch.FloatTensor(np.array(batch_rewards)),
+            torch.FloatTensor(np.array(batch_next_states)),
+            torch.FloatTensor(np.array(batch_dones))
+        )
+        
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+
+class DRQNAgent:
+    """
+    Deep Recurrent Q-Network (DRQN) Agent.
+    
+    Similar to DQNAgent but uses a recurrent policy network and targets
+    sequences of experiences. This allows the agent to maintain "memory"
+    across steps in an episode, enabling it to solve POMDP environments
+    (where User ID might be missing).
+    """
+    
+    def __init__(
+        self,
+        state_dim: int = 5,
+        action_dim: int = 2,
+        hidden_dim: int = 128,
+        learning_rate: float = 0.0005,
+        gamma: float = 0.99,
+        epsilon_start: float = 1.0,
+        epsilon_end: float = 0.05,
+        epsilon_decay: float = 0.995,
+        buffer_capacity: int = 500,
+        batch_size: int = 32,
+        seq_len: int = 16,
+        device: Optional[torch.device] = None
+    ):
+        """Initialize the DRQN Agent."""
+        self.device = device if device else get_device()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.batch_size = batch_size
+        self.seq_len = seq_len
+        self.gamma = gamma
+        
+        # Networks
+        self.policy_net = DRQNetwork(state_dim, action_dim, hidden_dim, device=self.device)
+        self.target_net = DRQNetwork(state_dim, action_dim, hidden_dim, device=self.device)
+        self.update_target()
+        self.target_net.eval()
+        
+        # Optimizer & Replay
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
+        self.replay_buffer = EpisodeReplayBuffer(capacity=buffer_capacity)
+        
+        # Epsilon
+        self.epsilon = epsilon_start
+        self.epsilon_end = epsilon_end
+        self.epsilon_decay = epsilon_decay
+        
+        # Recurrent state for interaction
+        self.hidden = None
+        
+    def reset_hidden(self):
+        """Reset the LSTM hidden state at the start of an episode."""
+        self.hidden = self.policy_net.init_hidden(batch_size=1)
+        
+    def update_target(self):
+        """Copy weights from policy to target network."""
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        
+    def act(self, state: np.ndarray, epsilon: Optional[float] = None) -> int:
+        """Select action using epsilon-greedy policy with recurrent state."""
+        if epsilon is None:
+            epsilon = self.epsilon
+            
+        if random.random() < epsilon:
+            # Still update hidden state even if exploring to keep consistency
+            with torch.no_grad():
+                state_tensor = torch.FloatTensor(state).view(1, 1, -1).to(self.device)
+                _, self.hidden = self.policy_net(state_tensor, self.hidden)
+            return random.randint(0, self.action_dim - 1)
+        
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).view(1, 1, -1).to(self.device)
+            q_values, self.hidden = self.policy_net(state_tensor, self.hidden)
+            return q_values[0, 0].argmax().item()
+            
+    def store_episode(self, episode: List[tuple]):
+        """Store a full episode in the buffer."""
+        self.replay_buffer.push(episode)
+        
+    def train_step(self) -> Optional[float]:
+        """Perform a training step on a batch of sequences."""
+        if len(self.replay_buffer) < self.batch_size:
+            return None
+            
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size, self.seq_len)
+        
+        states = states.to(self.device)         # (B, L, D)
+        actions = actions.to(self.device)       # (B, L)
+        rewards = rewards.to(self.device)       # (B, L)
+        next_states = next_states.to(self.device) # (B, L, D)
+        dones = dones.to(self.device)           # (B, L)
+        
+        # Forward pass through policy net
+        # Initial hidden states are zeros for training on sequences
+        q_values, _ = self.policy_net(states) # (B, L, A)
+        
+        # Pick Q-values for actions taken
+        # actions is (B, L), we need (B, L, 1) to use gather
+        q_values = q_values.gather(2, actions.unsqueeze(2)).squeeze(2) # (B, L)
+        
+        # Target Q-values
+        with torch.no_grad():
+            # Use Double DQN-style update
+            # 1. Selection using policy net
+            next_q_policy, _ = self.policy_net(next_states)
+            next_actions = next_q_policy.argmax(2).unsqueeze(2) # (B, L, 1)
+            
+            # 2. Evaluation using target net
+            next_q_target, _ = self.target_net(next_states)
+            next_q_values = next_q_target.gather(2, next_actions).squeeze(2) # (B, L)
+            
+            q_targets = rewards + self.gamma * next_q_values * (1 - dones)
+            
+        loss = F.mse_loss(q_values, q_targets)
+        
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), 10.0)
+        self.optimizer.step()
+        
+        return loss.item()
+
+    def decay_epsilon(self):
+        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)

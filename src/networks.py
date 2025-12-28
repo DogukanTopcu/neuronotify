@@ -17,7 +17,7 @@ Hardware Optimization:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Union
+from typing import Union, Optional, Tuple
 
 
 def get_device() -> torch.device:
@@ -255,3 +255,89 @@ class DuelingQNetwork(nn.Module):
             q_values = q_values.squeeze(0)
             
         return q_values
+class DRQNetwork(nn.Module):
+    """
+    Deep Recurrent Q-Network (DRQN) architecture.
+    
+    Adds an LSTM layer to the Q-Network to handle Partial Observability (POMDP).
+    The network maintains an internal state (hidden and cell states) that 
+    allows it to remember past observations and infer latent variables 
+    (like user persona without explicit ID).
+    """
+    
+    def __init__(
+        self,
+        state_dim: int = 5,
+        action_dim: int = 2,
+        hidden_dim: int = 128,
+        device: Union[torch.device, str, None] = None
+    ):
+        """
+        Initialize the DRQ-Network.
+        
+        Args:
+            state_dim: Dimension of state vector
+            action_dim: Number of actions
+            hidden_dim: Hidden dimension for LSTM and FC layers
+            device: Compute device
+        """
+        super(DRQNetwork, self).__init__()
+        
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
+        
+        if device is None:
+            self.device = get_device()
+        elif isinstance(device, str):
+            self.device = torch.device(device)
+        else:
+            self.device = device
+            
+        # Feature extraction (before LSTM)
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        
+        # LSTM layer
+        # batch_first=True means input shape is (batch, seq_len, features)
+        self.lstm = nn.LSTM(hidden_dim, hidden_dim, batch_first=True)
+        
+        # Output layer
+        self.fc2 = nn.Linear(hidden_dim, action_dim)
+        
+        self.to(self.device)
+        
+    def forward(self, x: torch.Tensor, hidden: Optional[Tuple[torch.Tensor, torch.Tensor]] = None) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Forward pass through the DRQN.
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, state_dim)
+            hidden: Initial hidden state (h, c)
+            
+        Returns:
+            q_values: Q-values for each action (batch_size, seq_len, action_dim)
+            hidden: Re-calculated hidden state (h, c)
+        """
+        if x.device != self.device:
+            x = x.to(self.device)
+            
+        # x shape: (batch, seq_len, state_dim)
+        batch_size, seq_len, _ = x.size()
+        
+        # FC1 layer
+        x = F.relu(self.fc1(x))
+        
+        # LSTM layer
+        # if hidden is None, LSTM initializes it to zeros
+        lstm_out, hidden = self.lstm(x, hidden)
+        
+        # Output layer
+        q_values = self.fc2(lstm_out)
+        
+        return q_values, hidden
+
+    def init_hidden(self, batch_size: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return initial hidden and cell states (zeros)."""
+        h = torch.zeros(1, batch_size, self.hidden_dim).to(self.device)
+        c = torch.zeros(1, batch_size, self.hidden_dim).to(self.device)
+        return (h, c)
