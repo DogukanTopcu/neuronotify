@@ -75,7 +75,7 @@ class StochasticNotificationEnv(NotificationEnv):
         reward_click: float = 10.0,
         reward_ignore: float = -3.0,
         reward_wait: float = 0.0,
-        reward_churn: float = -50.0,
+        reward_churn: float = -15.0,
         include_user_id: bool = True,
         render_mode: Optional[str] = None,
         seed: Optional[int] = None

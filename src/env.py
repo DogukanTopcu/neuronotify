@@ -22,7 +22,7 @@ Reward Function (R):
     - Wait: 0
     - Send + Click: +10.0
     - Send + Ignore: -1.0
-    - Churn: -50.0
+    - Churn: -15.0
 """
 
 from dataclasses import dataclass, field
@@ -108,7 +108,7 @@ class NotificationEnv(gym.Env):
         - Wait: 0
         - Send + User clicks: +10.0 (default)
         - Send + User ignores: -3.0 (default - increased for scientific rigor)
-        - Churn (annoyance > threshold): -50.0 (terminal)
+        - Churn (annoyance > threshold): -15.0 (terminal)
     """
     
     metadata = {"render_modes": ["human", "ansi"]}
@@ -127,7 +127,7 @@ class NotificationEnv(gym.Env):
         reward_click: float = 10.0,
         reward_ignore: float = -3.0,
         reward_wait: float = 0.0,
-        reward_churn: float = -50.0,
+        reward_churn: float = -15.0,
         render_mode: Optional[str] = None,
         seed: Optional[int] = None
     ):
