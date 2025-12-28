@@ -16,6 +16,7 @@ from typing import List, Optional, Tuple, Any
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from src.networks import get_device
 
 
 def compute_moving_average(data: List[float], window_size: int = 50) -> np.ndarray:
@@ -184,6 +185,53 @@ def plot_behavioral_heatmap(
     if save_path: fig.savefig(save_path, dpi=150, bbox_inches='tight')
     if show: plt.show()
     return fig
+
+
+# Alias for backward compatibility and Experiment 3
+plot_policy_heatmap = plot_behavioral_heatmap
+
+
+def evaluate_agent(
+    agent,
+    env,
+    n_episodes: int = 10,
+    epsilon: float = 0.0,
+    user_profiles: Optional[List[Any]] = None
+) -> float:
+    """
+    Evaluate an agent over multiple episodes.
+
+    Args:
+        agent: The agent to evaluate
+        env: The environment
+        n_episodes: Number of episodes to run
+        epsilon: Exploration rate during evaluation (default 0.0 for pure exploitation)
+        user_profiles: Optional list of profiles to sample from randomly per episode
+
+    Returns:
+        Average reward per episode
+    """
+    total_rewards = []
+
+    for _ in range(n_episodes):
+        options = {}
+        if user_profiles:
+            options["user_profile"] = np.random.choice(user_profiles)
+
+        state, _ = env.reset(options=options)
+        episode_reward = 0.0
+        done = False
+
+        while not done:
+            # Most agents have an act method
+            action = agent.act(state, epsilon=epsilon)
+            state, reward, terminated, truncated, _ = env.step(action)
+            episode_reward += reward
+            done = terminated or truncated
+
+        total_rewards.append(episode_reward)
+
+    return float(np.mean(total_rewards))
 
 
 def plot_dual_heatmap(
