@@ -12,7 +12,7 @@ These visualizations are critical for the IEEE paper to demonstrate that
 the DQN has learned meaningful behavioral patterns aligned with user personas.
 """
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -115,7 +115,8 @@ def plot_learning_curve(
 
 def plot_behavioral_heatmap(
     agent,
-    user_id: int = 0,
+    user_profile: Optional[Any] = None,
+    num_users: int = 2,
     annoyance: float = 0.0,
     day: int = 0,
     hours_range: Tuple[int, int] = (0, 24),
@@ -128,30 +129,6 @@ def plot_behavioral_heatmap(
 ) -> plt.Figure:
     """
     Create a behavioral heatmap showing Q-values for the Send action.
-    
-    This visualization is critical for the IEEE paper. It shows how the
-    learned policy values sending notifications across different hours
-    and recency levels. A well-trained agent should show:
-    
-    - High Q-values (bright) during awake hours
-    - Low Q-values (dark) during sleep hours
-    - Lower Q-values when recency is low (recently sent)
-    
-    Args:
-        agent: Trained DQNAgent instance
-        user_id: User ID to encode in states
-        annoyance: Fixed annoyance level for visualization
-        day: Day of week (0-6)
-        hours_range: Range of hours to plot (start, end)
-        recency_range: Range of recency values (start, end)
-        title: Plot title
-        figsize: Figure dimensions
-        save_path: Optional path to save the figure
-        show: Whether to display the plot
-        cmap: Colormap for the heatmap
-        
-    Returns:
-        Matplotlib Figure object
     """
     # Define grid
     hours = np.arange(hours_range[0], hours_range[1])
@@ -160,36 +137,31 @@ def plot_behavioral_heatmap(
     # Create Q-value matrix
     q_matrix = np.zeros((len(recencies), len(hours)))
     
-    # Normalization constants (matching env.py)
+    # Normalization constants
     MAX_RECENCY = 48.0
     MAX_ANNOYANCE = 10.0
-    MAX_USER_ID = 10.0
     
     for i, recency in enumerate(recencies):
         for j, hour in enumerate(hours):
-            # Construct normalized state
             norm_hour = hour / 23.0
             norm_day = day / 6.0
             norm_recency = min(recency, MAX_RECENCY) / MAX_RECENCY
             norm_annoyance = min(annoyance, MAX_ANNOYANCE) / MAX_ANNOYANCE
-            user_id_encoded = user_id / MAX_USER_ID
             
-            state = np.array([
-                norm_hour,
-                norm_day,
-                norm_recency,
-                norm_annoyance,
-                user_id_encoded
-            ], dtype=np.float32)
+            # One-hot encode the user_id
+            user_ohe = np.zeros(num_users, dtype=np.float32)
+            if user_profile and 0 <= user_profile.user_id < num_users:
+                user_ohe[user_profile.user_id] = 1.0
             
-            # Get Q-value for Send action (action=1)
+            state = np.concatenate([
+                [norm_hour, norm_day, norm_recency, norm_annoyance],
+                user_ohe
+            ]).astype(np.float32)
+            
             q_values = agent.get_q_values(state)
-            q_matrix[i, j] = q_values[1]  # Q-value for Send
+            q_matrix[i, j] = q_values[1]
             
-    # Create figure with heatmap
     fig, ax = plt.subplots(figsize=figsize)
-    
-    # Plot heatmap
     im = ax.imshow(
         q_matrix,
         aspect='auto',
@@ -198,129 +170,45 @@ def plot_behavioral_heatmap(
         extent=[hours_range[0], hours_range[1], recency_range[0], recency_range[1]]
     )
     
-    # Add colorbar
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label('Q-Value (Send)', fontsize=11)
     
-    # Styling
     ax.set_xlabel('Hour of Day', fontsize=12)
     ax.set_ylabel('Hours Since Last Notification', fontsize=12)
     ax.set_title(title, fontsize=14, fontweight='bold')
-    
-    # Add hour labels
     ax.set_xticks(np.arange(0, 24, 2))
     ax.set_xticklabels([f'{h:02d}:00' for h in range(0, 24, 2)], rotation=45)
-    
-    # Add recency labels
     ax.set_yticks(np.arange(recency_range[0], recency_range[1], 2))
     
     plt.tight_layout()
-    
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        
-    if show:
-        plt.show()
-        
+    if save_path: fig.savefig(save_path, dpi=150, bbox_inches='tight')
+    if show: plt.show()
     return fig
 
 
 def plot_dual_heatmap(
     agent,
-    user_profiles: List[dict],
-    annoyance: float = 0.0,
+    profile1: Any,
+    profile2: Any,
+    num_users: int = 2,
+    title1: str = "Profile 1",
+    title2: str = "Profile 2",
     figsize: Tuple[int, int] = (16, 6),
-    save_path: Optional[str] = None,
-    show: bool = True
+    **kwargs
 ) -> plt.Figure:
     """
-    Create side-by-side heatmaps comparing Q-values for different user profiles.
-    
-    This visualization demonstrates how the same neural network learns
-    different scheduling patterns for different users based on the
-    user_id encoded in the state vector.
-    
-    Args:
-        agent: Trained DQNAgent instance
-        user_profiles: List of dicts with 'user_id', 'name', and optional 'annoyance'
-        annoyance: Default annoyance level if not specified per profile
-        figsize: Figure dimensions
-        save_path: Optional path to save the figure
-        show: Whether to display the plot
-        
-    Returns:
-        Matplotlib Figure object
+    Compare two user personas side-by-side using heatmaps.
     """
-    n_profiles = len(user_profiles)
-    fig, axes = plt.subplots(1, n_profiles, figsize=figsize)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
     
-    if n_profiles == 1:
-        axes = [axes]
-        
-    hours = np.arange(0, 24)
-    recencies = np.arange(0, 11)
+    plt.sca(ax1)
+    plot_behavioral_heatmap(agent, user_profile=profile1, num_users=num_users, title=title1, show=False, **kwargs)
     
-    MAX_RECENCY = 48.0
-    MAX_ANNOYANCE = 10.0
-    MAX_USER_ID = 10.0
+    plt.sca(ax2)
+    plot_behavioral_heatmap(agent, user_profile=profile2, num_users=num_users, title=title2, show=False, **kwargs)
     
-    # Compute all Q-matrices for consistent color scaling
-    q_matrices = []
-    
-    for profile in user_profiles:
-        user_id = profile['user_id']
-        user_annoyance = profile.get('annoyance', annoyance)
-        q_matrix = np.zeros((len(recencies), len(hours)))
-        
-        for i, recency in enumerate(recencies):
-            for j, hour in enumerate(hours):
-                state = np.array([
-                    hour / 23.0,
-                    0.0,  # day
-                    min(recency, MAX_RECENCY) / MAX_RECENCY,
-                    min(user_annoyance, MAX_ANNOYANCE) / MAX_ANNOYANCE,
-                    user_id / MAX_USER_ID
-                ], dtype=np.float32)
-                
-                q_values = agent.get_q_values(state)
-                q_matrix[i, j] = q_values[1]
-                
-        q_matrices.append(q_matrix)
-        
-    # Determine global color scale
-    vmin = min(q.min() for q in q_matrices)
-    vmax = max(q.max() for q in q_matrices)
-    
-    # Plot each heatmap
-    for idx, (ax, profile, q_matrix) in enumerate(zip(axes, user_profiles, q_matrices)):
-        im = ax.imshow(
-            q_matrix,
-            aspect='auto',
-            cmap='RdYlGn',
-            origin='lower',
-            extent=[0, 24, 0, 11],
-            vmin=vmin,
-            vmax=vmax
-        )
-        
-        ax.set_xlabel('Hour of Day', fontsize=11)
-        ax.set_ylabel('Hours Since Last Notification', fontsize=11)
-        ax.set_title(f"{profile['name']}", fontsize=12, fontweight='bold')
-        ax.set_xticks(np.arange(0, 24, 4))
-        ax.set_xticklabels([f'{h:02d}:00' for h in range(0, 24, 4)], rotation=45)
-        
-    # Add shared colorbar
-    fig.colorbar(im, ax=axes, shrink=0.8, label='Q-Value (Send)')
-    
-    plt.suptitle('Learned Notification Scheduling Patterns', fontsize=14, fontweight='bold')
     plt.tight_layout()
-    
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight')
-        
-    if show:
-        plt.show()
-        
+    plt.show()
     return fig
 
 

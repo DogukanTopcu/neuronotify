@@ -147,6 +147,7 @@ class DQNAgent:
         epsilon_decay: float = 0.995,
         buffer_capacity: int = 10000,
         batch_size: int = 64,
+        use_double_dqn: bool = True,
         device: Optional[torch.device] = None
     ):
         """
@@ -162,6 +163,7 @@ class DQNAgent:
             epsilon_decay: Multiplicative decay factor per episode
             buffer_capacity: Replay buffer size
             batch_size: Training batch size
+            use_double_dqn: Whether to use Double DQN update rule (default: True)
             device: Compute device (auto-detect if None)
         """
         # Set device (Apple Silicon optimized)
@@ -170,6 +172,7 @@ class DQNAgent:
         # Network dimensions
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.use_double_dqn = use_double_dqn
         
         # Initialize networks
         self.policy_net = QNetwork(state_dim, action_dim, device=self.device)
@@ -203,20 +206,10 @@ class DQNAgent:
         # Training statistics
         self.training_steps = 0
         self.loss_history: List[float] = []
-        
+
     def act(self, state: np.ndarray, epsilon: Optional[float] = None) -> int:
         """
         Select action using epsilon-greedy policy.
-        
-        With probability epsilon, select a random action (exploration).
-        Otherwise, select the action with highest Q-value (exploitation).
-        
-        Args:
-            state: Current state vector
-            epsilon: Exploration rate (uses self.epsilon if None)
-            
-        Returns:
-            Selected action (0: Wait, 1: Send)
         """
         if epsilon is None:
             epsilon = self.epsilon
@@ -228,6 +221,9 @@ class DQNAgent:
         # Exploitation: greedy action
         with torch.no_grad():
             state_tensor = torch.FloatTensor(state).to(self.device)
+            # Ensure it has batch dimension for forward pass
+            if state_tensor.dim() == 1:
+                state_tensor = state_tensor.unsqueeze(0)
             q_values = self.policy_net(state_tensor)
             return q_values.argmax().item()
             
@@ -239,37 +235,16 @@ class DQNAgent:
         next_state: np.ndarray,
         done: bool
     ) -> None:
-        """
-        Store a transition in the replay buffer.
-        
-        Args:
-            state: Current state
-            action: Action taken
-            reward: Reward received
-            next_state: Next state
-            done: Whether episode ended
-        """
+        """Store a transition in the replay buffer."""
         self.replay_buffer.push(state, action, reward, next_state, done)
         
     def train_step(self, batch_size: Optional[int] = None) -> Optional[float]:
         """
         Perform one training step using experience replay.
         
-        Samples a batch from the replay buffer, computes Q-targets using
-        the target network, and updates the policy network via gradient descent.
-        
-        The Q-target formula:
-            y = r + γ * max_a' Q_target(s', a')  if not done
-            y = r                                  if done
-            
-        Loss function:
-            L = MSE(Q_policy(s, a), y)
-        
-        Args:
-            batch_size: Override default batch size
-            
-        Returns:
-            Loss value if training occurred, None otherwise
+        Implements Standard DQN or Double DQN (DDQN) based on self.use_double_dqn.
+        DDQN mitigates overestimation bias by using the policy network to select
+        the action and the target network to evaluate it.
         """
         batch_size = batch_size or self.batch_size
         
@@ -291,13 +266,18 @@ class DQNAgent:
         q_values = self.policy_net(states)
         q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
         
-        # Compute Q-targets using target network
+        # Compute Q-targets
         with torch.no_grad():
-            next_q_values = self.target_net(next_states)
-            max_next_q_values = next_q_values.max(1)[0]
+            if self.use_double_dqn:
+                # DDQN: Use policy_net to choose action, target_net to evaluate it
+                next_actions = self.policy_net(next_states).argmax(1).unsqueeze(1)
+                next_q_values = self.target_net(next_states).gather(1, next_actions).squeeze(1)
+            else:
+                # Standard DQN: Use target_net for both selection and evaluation
+                next_q_values = self.target_net(next_states).max(1)[0]
             
-            # Target: r + γ * max Q(s', a') * (1 - done)
-            q_targets = rewards + self.gamma * max_next_q_values * (1 - dones)
+            # Target: r + γ * Q(s', a') * (1 - done)
+            q_targets = rewards + self.gamma * next_q_values * (1 - dones)
             
         # Compute loss
         loss = self.loss_fn(q_values, q_targets)

@@ -6,7 +6,8 @@ The network approximates the Q-function Q(s, a) which estimates the expected
 cumulative reward for taking action a in state s.
 
 Architecture:
-    Input(5) → Linear(128, ReLU) → Linear(128, ReLU) → Linear(64, ReLU) → Output(2)
+    Input(D) → Linear(128, ReLU) → Linear(128, ReLU) → Linear(64, ReLU) → Output(2)
+    where D = dimension of state vector (4 + num_users).
     
 Hardware Optimization:
     Optimized for Apple Silicon (M2) using MPS (Metal Performance Shaders)
@@ -40,11 +41,10 @@ class QNetwork(nn.Module):
     Deep Q-Network for notification scheduling.
     
     The network takes a state vector and outputs Q-values for each action.
-    Architecture follows best practices for DQN with moderate complexity
-    suitable for the 5-dimensional state space.
+    Architecture follows best practices for DQN with moderate complexity.
     
     Architecture:
-        - Input Layer: 5 features (state vector)
+        - Input Layer: D features (state vector)
         - Hidden Layer 1: 128 units with ReLU activation
         - Hidden Layer 2: 128 units with ReLU activation  
         - Hidden Layer 3: 64 units with ReLU activation

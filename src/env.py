@@ -92,12 +92,12 @@ class NotificationEnv(gym.Env):
     while avoiding user annoyance and churn.
     
     Observation Space:
-        Box(5,) with components:
+        Box(4 + num_users,) with components:
         - norm_hour: Current hour normalized to [0, 1]
         - norm_day: Current day normalized to [0, 1] (7-day cycle)
-        - norm_recency: Hours since last notification sent, normalized
-        - norm_annoyance: Current annoyance level normalized
-        - user_id_encoded: User ID normalized for multi-user learning
+        - norm_recency: Hours since last notification sent, normalized [0, 1]
+        - norm_annoyance: Current annoyance level normalized [0, 1]
+        - user_one_hot: One-hot encoded user ID (categorical representation)
         
     Action Space:
         Discrete(2):
@@ -106,8 +106,8 @@ class NotificationEnv(gym.Env):
         
     Reward Structure:
         - Wait: 0
-        - Send + User clicks: +10.0
-        - Send + User ignores: -1.0 (interruption cost)
+        - Send + User clicks: +10.0 (default)
+        - Send + User ignores: -3.0 (default - increased for scientific rigor)
         - Churn (annoyance > threshold): -50.0 (terminal)
     """
     
@@ -116,20 +116,18 @@ class NotificationEnv(gym.Env):
     # Constants for normalization
     MAX_RECENCY = 48.0  # Maximum hours to track since last send
     MAX_ANNOYANCE = 10.0  # Maximum annoyance for normalization
-    MAX_USER_ID = 10.0  # Maximum expected user IDs for normalization
-    CHURN_THRESHOLD = 5.0  # Annoyance level triggering churn
+    CHURN_THRESHOLD = 3.0  # Reduced from 5.0 for higher sensitivity
     MAX_EPISODE_STEPS = 168  # One week in hours
-    
-    # Reward constants
-    REWARD_CLICK = 10.0
-    REWARD_IGNORE = -1.0
-    REWARD_WAIT = 0.0
-    REWARD_CHURN = -50.0
     
     def __init__(
         self,
         user_profile: UserProfile,
+        num_users: int = 2,
         max_episode_steps: int = 168,
+        reward_click: float = 10.0,
+        reward_ignore: float = -3.0,
+        reward_wait: float = 0.0,
+        reward_churn: float = -50.0,
         render_mode: Optional[str] = None,
         seed: Optional[int] = None
     ):
@@ -138,6 +136,7 @@ class NotificationEnv(gym.Env):
         
         Args:
             user_profile: UserProfile instance defining user behavior
+            num_users: Total number of unique user personas for one-hot encoding
             max_episode_steps: Maximum steps per episode (default: 168 = 1 week)
             render_mode: Rendering mode ("human" or "ansi")
             seed: Random seed for reproducibility
@@ -145,14 +144,22 @@ class NotificationEnv(gym.Env):
         super().__init__()
         
         self.user_profile = user_profile
+        self.num_users = num_users
         self.max_episode_steps = max_episode_steps
         self.render_mode = render_mode
         
+        # Reward configuration
+        self.reward_click = reward_click
+        self.reward_ignore = reward_ignore
+        self.reward_wait = reward_wait
+        self.reward_churn = reward_churn
+        
         # Define observation and action spaces
+        # 4 continuous features + OHE vector for users
         self.observation_space = spaces.Box(
             low=0.0,
             high=1.0,
-            shape=(5,),
+            shape=(4 + self.num_users,),
             dtype=np.float32
         )
         
@@ -161,7 +168,7 @@ class NotificationEnv(gym.Env):
         # Initialize state variables
         self._current_hour: int = 0
         self._current_day: int = 0
-        self._hours_since_send: int = 24  # Start with 24 hours since last send
+        self._hours_since_send: int = 24
         self._annoyance: float = 0.0
         self._step_count: int = 0
         
@@ -173,39 +180,26 @@ class NotificationEnv(gym.Env):
             
     def _get_state(self) -> np.ndarray:
         """
-        Construct the normalized state vector.
-        
-        Returns:
-            np.ndarray of shape (5,) with normalized state components
+        Construct the normalized state vector with One-Hot encoding for User ID.
         """
         norm_hour = self._current_hour / 23.0
-        norm_day = self._current_day / 6.0  # 7-day cycle
+        norm_day = self._current_day / 6.0
         norm_recency = min(self._hours_since_send, self.MAX_RECENCY) / self.MAX_RECENCY
         norm_annoyance = min(self._annoyance, self.MAX_ANNOYANCE) / self.MAX_ANNOYANCE
-        user_id_encoded = self.user_profile.user_id / self.MAX_USER_ID
         
-        return np.array([
-            norm_hour,
-            norm_day,
-            norm_recency,
-            norm_annoyance,
-            user_id_encoded
-        ], dtype=np.float32)
+        # One-hot encode the user_id
+        user_ohe = np.zeros(self.num_users, dtype=np.float32)
+        if 0 <= self.user_profile.user_id < self.num_users:
+            user_ohe[self.user_profile.user_id] = 1.0
+        
+        return np.concatenate([
+            [norm_hour, norm_day, norm_recency, norm_annoyance],
+            user_ohe
+        ]).astype(np.float32)
         
     def _compute_click_probability(self) -> float:
         """
         Compute the probability of the user clicking a notification.
-        
-        Formula:
-            P(click) = responsiveness × circadian_factor × work_penalty × recency_decay
-            
-        Where:
-            - circadian_factor: 0.0 if sleeping, 1.0 if awake
-            - work_penalty: 0.2 if working, 1.0 otherwise
-            - recency_decay: 0.1 if sent within last 4 hours, 1.0 otherwise
-            
-        Returns:
-            Probability of click in [0, 1]
         """
         # Base responsiveness
         prob = self.user_profile.responsiveness
@@ -230,30 +224,24 @@ class NotificationEnv(gym.Env):
         seed: Optional[int] = None,
         options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """
-        Reset the environment to initial state.
-        
-        Args:
-            seed: Optional seed for random number generator
-            options: Optional dict with reset options
-            
-        Returns:
-            Tuple of (initial_state, info_dict)
-        """
+        """Reset the environment to initial state."""
         super().reset(seed=seed)
         
         if seed is not None:
             self.np_random, _ = gym.utils.seeding.np_random(seed)
             
         # Reset state variables
-        # Start at a random hour if options not provided
         if options and "start_hour" in options:
             self._current_hour = options["start_hour"]
         else:
             self._current_hour = int(self.np_random.integers(0, 24))
             
+        # Support dynamic user profile switching at reset
+        if options and "user_profile" in options:
+            self.user_profile = options["user_profile"]
+            
         self._current_day = 0
-        self._hours_since_send = 24  # Assume 24 hours since last notification
+        self._hours_since_send = 24
         self._annoyance = 0.0
         self._step_count = 0
         
@@ -268,15 +256,7 @@ class NotificationEnv(gym.Env):
         return self._get_state(), info
         
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        """
-        Execute one step in the environment.
-        
-        Args:
-            action: 0 (Wait) or 1 (Send)
-            
-        Returns:
-            Tuple of (next_state, reward, terminated, truncated, info)
-        """
+        """Execute one step in the environment."""
         assert self.action_space.contains(action), f"Invalid action: {action}"
         
         self._step_count += 1
@@ -290,26 +270,23 @@ class NotificationEnv(gym.Env):
             clicked = self.np_random.random() < click_prob
             
             if clicked:
-                # User clicked - positive reward and decreased annoyance
-                reward = self.REWARD_CLICK
+                reward = self.reward_click
                 self._annoyance = max(0.0, self._annoyance - 1.0)
             else:
-                # User ignored - negative reward and increased annoyance
-                reward = self.REWARD_IGNORE
+                reward = self.reward_ignore
                 self._annoyance += 1.0
                 
-            # Reset recency counter
             self._hours_since_send = 0
         else:  # Wait
-            reward = self.REWARD_WAIT
+            reward = self.reward_wait
             self._hours_since_send += 1
             
-        # Apply patience decay to annoyance every step
+        # Apply patience decay to annoyance
         self._annoyance *= self.user_profile.patience
         
         # Check for churn
         if self._annoyance > self.CHURN_THRESHOLD:
-            reward = self.REWARD_CHURN
+            reward = self.reward_churn
             terminated = True
             
         # Advance time
@@ -335,12 +312,7 @@ class NotificationEnv(gym.Env):
         return self._get_state(), reward, terminated, truncated, info
         
     def render(self) -> Optional[str]:
-        """
-        Render the current environment state.
-        
-        Returns:
-            String representation of state if render_mode is "ansi"
-        """
+        """Render the current environment state."""
         if self.render_mode == "ansi" or self.render_mode == "human":
             awake_status = "awake" if self.user_profile.is_awake(self._current_hour) else "asleep"
             work_status = "working" if self.user_profile.is_working(self._current_hour) else "free"
@@ -360,25 +332,33 @@ class NotificationEnv(gym.Env):
         return None
         
     def close(self):
-        """Clean up resources."""
         pass
 
 
 # Predefined user profiles for experiments
 STUDENT_PROFILE = UserProfile(
     user_id=0,
-    wake_hour=12,  # Night owl: wakes up at noon
-    sleep_hour=4,   # Goes to sleep at 4am
-    work_hours=[],  # No fixed work hours
+    wake_hour=12,
+    sleep_hour=4,
+    work_hours=[],
     responsiveness=0.6,
     patience=0.85
 )
 
 WORKER_PROFILE = UserProfile(
     user_id=1,
-    wake_hour=7,    # Early riser
-    sleep_hour=23,  # Sleeps at 11pm
-    work_hours=list(range(9, 18)),  # 9am to 5pm
+    wake_hour=7,
+    sleep_hour=23,
+    work_hours=list(range(9, 18)),
     responsiveness=0.5,
     patience=0.9
+)
+
+WORKAHOLIC_PROFILE = UserProfile(
+    user_id=2,
+    wake_hour=6,
+    sleep_hour=0,
+    work_hours=list(range(8, 20)),  # 8am to 8pm
+    responsiveness=0.4,
+    patience=0.95
 )
