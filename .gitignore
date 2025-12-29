@@ -71,3 +71,7 @@ Thumbs.db
 *.ckpt
 *.h5
 wandb/
+
+
+
+figures
