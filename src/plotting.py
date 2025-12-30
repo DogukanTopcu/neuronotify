@@ -110,6 +110,10 @@ def plot_exp3_baseline_comparison(
     values = list(rewards.values())
     colors = ['gray', 'steelblue', 'green', 'gold']
     
+    # Ensure there are enough colors if more baselines
+    if len(values) > len(colors):
+        colors = plt.cm.tab10(np.linspace(0, 1, len(values)))
+
     bars = ax.bar(names, values, color=colors, alpha=0.8, edgecolor='black')
     
     # Add values on top
@@ -124,11 +128,16 @@ def plot_exp3_baseline_comparison(
     ax.grid(axis='y', alpha=0.3)
     
     # Add multipliers relative to Random
-    base_val = values[0]
-    for i in range(1, len(values)):
-        multiplier = values[i] / base_val if base_val != 0 else 0
-        ax.text(i, values[i]/2, f"{multiplier:.1f}x", 
-                ha='center', color='white', fontweight='bold', fontsize=14)
+    if len(values) > 0:
+        base_val = values[0]
+        for i in range(1, len(values)):
+            if base_val != 0:
+                multiplier = values[i] / base_val
+                # Place text inside bar if positive, or above
+                y_pos = values[i]/2 if values[i] > 0 else values[i] - 1
+                color = 'white' if values[i] > 5 else 'black'
+                ax.text(i, y_pos, f"{multiplier:.1f}x", 
+                        ha='center', color=color, fontweight='bold', fontsize=14)
     
     plt.tight_layout()
     
@@ -148,6 +157,7 @@ def plot_exp3_ohe_vs_pomdp(
     Experiment 3: Learning curve comparison.
     """
     def smooth(x, window=50):
+        if len(x) < window: return x
         return np.convolve(x, np.ones(window)/window, mode='valid')
 
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -168,16 +178,17 @@ def plot_exp3_ohe_vs_pomdp(
     ax.grid(True, alpha=0.3)
     
     # Annotate final values
-    final_ohe = np.mean(ohe_rewards[-100:])
-    final_pomdp = np.mean(pomdp_rewards[-100:])
-    
-    ax.annotate(f"OHE: {final_ohe:.1f}", 
-                xy=(len(ohe_rewards), final_ohe), 
-                xytext=(10, 0), textcoords='offset points', color='green', fontweight='bold')
-    
-    ax.annotate(f"POMDP: {final_pomdp:.1f}", 
-                xy=(len(pomdp_rewards), final_pomdp), 
-                xytext=(10, 0), textcoords='offset points', color='orange', fontweight='bold')
+    if len(ohe_rewards) > 100:
+        final_ohe = np.mean(ohe_rewards[-100:])
+        ax.annotate(f"OHE: {final_ohe:.1f}", 
+                    xy=(len(ohe_rewards), final_ohe), 
+                    xytext=(10, 0), textcoords='offset points', color='green', fontweight='bold')
+
+    if len(pomdp_rewards) > 100:
+        final_pomdp = np.mean(pomdp_rewards[-100:])
+        ax.annotate(f"POMDP: {final_pomdp:.1f}", 
+                    xy=(len(pomdp_rewards), final_pomdp), 
+                    xytext=(10, 0), textcoords='offset points', color='orange', fontweight='bold')
     
     plt.tight_layout()
     
@@ -221,15 +232,45 @@ def plot_exp3_sensitivity_tradeoff(
     # Title
     plt.title("Experiment 3: Quantity vs Quality Trade-off", fontsize=14, fontweight='bold')
     
-    # Legend
-    # lines_1, labels_1 = ax1.get_legend_handles_labels()
-    # lines_2, labels_2 = ax2.get_legend_handles_labels()
-    # ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper center')
-    
     plt.tight_layout()
     
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Saved sensitivity plot to {save_path}")
+        
+    return fig
+
+def plot_exp3_sensitivity_curves(
+    results: Dict[float, List[float]],
+    save_path: str = "exp3_sensitivity_curves.png"
+) -> plt.Figure:
+    """
+    Experiment 3: Learning curves for different penalty values.
+    """
+    def smooth(x, window=50):
+        if len(x) < window: return x
+        return np.convolve(x, np.ones(window)/window, mode='valid')
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    
+    # Colormap
+    colors = plt.cm.viridis(np.linspace(0, 1, len(results)))
+    
+    for (penalty, rewards), color in zip(sorted(results.items(), reverse=True), colors):
+        smoothed = smooth(rewards, 50)
+        ax.plot(smoothed, label=f'Penalty {penalty}', color=color, linewidth=2)
+        ax.plot(rewards, alpha=0.1, color=color)
+        
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Total Reward")
+    ax.set_title("Experiment 3: Reward Sensitivity Analysis", fontsize=14, fontweight='bold')
+    ax.legend(title="Ignore Penalty")
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved sensitivity curves to {save_path}")
         
     return fig

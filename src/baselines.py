@@ -19,13 +19,14 @@ import numpy as np
 class BaselineAgent:
     """Base class for heuristic agents."""
     
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """
         Select an action based on the current state.
         
         Args:
             state: Current observation from environment
             info: Optional info dict from environment (may contain hour, user status, etc.)
+            **kwargs: Additional arguments (e.g., epsilon) ignored by baselines
             
         Returns:
             Action (0 = Wait, 1 = Send)
@@ -52,7 +53,7 @@ class RandomAgent(BaselineAgent):
         self.send_probability = send_probability
         self.rng = np.random.default_rng(seed)
         
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """Randomly decide whether to send."""
         return 1 if self.rng.random() < self.send_probability else 0
 
@@ -76,7 +77,7 @@ class EveningOnlyAgent(BaselineAgent):
         self.evening_start = evening_start
         self.evening_end = evening_end
         
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """Send if current hour is in evening window."""
         if info and 'hour' in info:
             hour = info['hour']
@@ -105,7 +106,7 @@ class ActivityTriggeredAgent(BaselineAgent):
         self.min_recency_hours = min_recency_hours
         self.rng = np.random.default_rng(seed)
         
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """
         Send if:
         1. User is awake (from state or info)
@@ -161,7 +162,7 @@ class OptimalStaticAgent(BaselineAgent):
         """
         self.optimal_hours = optimal_hours if optimal_hours else [19, 20, 21]
         
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """Send if current hour is in optimal set."""
         if info and 'hour' in info:
             hour = info['hour']
@@ -193,7 +194,7 @@ class OracleAgent(BaselineAgent):
         self.threshold = threshold
         self.min_recency_hours = min_recency_hours
         
-    def act(self, state: np.ndarray, info: Optional[dict] = None) -> int:
+    def act(self, state: np.ndarray, info: Optional[dict] = None, **kwargs) -> int:
         """
         Send if ground-truth click probability exceeds the threshold
         and recency constraint is met.
