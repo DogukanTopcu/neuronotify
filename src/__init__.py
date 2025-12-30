@@ -14,6 +14,9 @@ from .utils import (
     plot_behavioral_heatmap,
     MetricsLogger
 )
+# Expose submodules for advanced usage
+from src import agents, env, env_stochastic, experiments, networks, utils, plotting
+
 
 __all__ = [
     # Environment
@@ -30,6 +33,8 @@ __all__ = [
     "plot_learning_curve",
     "plot_behavioral_heatmap",
     "MetricsLogger",
+    # Modules
+    "plotting"
 ]
 
 __version__ = "1.0.0"

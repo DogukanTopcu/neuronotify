@@ -150,27 +150,62 @@ def plot_behavioral_heatmap(
             norm_annoyance = min(annoyance, MAX_ANNOYANCE) / MAX_ANNOYANCE
             
             # Behavioral features (defaults for heatmap)
-            # In a real scenario, these could be parameters, but for generic heatmap 
-            # we assume the user is awake and not working to see peak potential.
             is_working = 0.0
             is_awake = 1.0
             
             # Construct state based on feature count
             base_features = [norm_hour, norm_day, norm_recency, norm_annoyance]
             
-            if num_users > 0:
-                # OHE mode: [base, is_working, is_awake, user_ohe]
-                user_ohe = np.zeros(num_users, dtype=np.float32)
-                if user_profile and 0 <= user_profile.user_id < num_users:
-                    user_ohe[user_profile.user_id] = 1.0
-                state = np.concatenate([base_features, [is_working, is_awake], user_ohe]).astype(np.float32)
+            # Smart State Construction
+            state_parts = [base_features]
+            
+            # Check agent's expected dimension
+            expected_dim = getattr(agent, 'state_dim', 0)
+            
+            # Determine if we should include behavioral features
+            # Logic: If dimension suggests behavioral features (e.g. > 4 + num_users)
+            include_behavioral = False
+            
+            # Calculate standard sizes
+            dim_with_beh = 4 + 2 + num_users if num_users > 0 else 6
+            dim_no_beh = 4 + num_users
+            
+            if expected_dim == dim_with_beh:
+                include_behavioral = True
+            elif expected_dim == dim_no_beh:
+                include_behavioral = False
+            elif expected_dim == 6 and num_users == 0: # POMDP
+                include_behavioral = True
             else:
-                # POMDP mode: [base, is_working, is_awake]
-                state = np.array(base_features + [is_working, is_awake], dtype=np.float32)
+                # Heuristic fallback: if num_users > 0 and using StochasticEnv features
+                # Default to old behavior if no state_dim match, or try to match exactly
+                if expected_dim > 0:
+                    if expected_dim == len(base_features) + 2 + num_users:
+                        include_behavioral = True
             
-            # Compatibility check for older environments (Exp 1/2) if needed
-            # But here we assume the new structure
+            if num_users > 0:
+                user_ohe = np.zeros(num_users, dtype=np.float32)
+                if user_profile and hasattr(user_profile, 'user_id') and 0 <= user_profile.user_id < num_users:
+                    user_ohe[user_profile.user_id] = 1.0
+                
+                if include_behavioral:
+                    state_parts.append([is_working, is_awake])
+                state_parts.append(user_ohe)
+            else:
+                # POMDP mode usually includes behavioral
+                state_parts.append([is_working, is_awake])
+                
+            state = np.concatenate(state_parts).astype(np.float32)
             
+            # Final safety check: if dimension mismatch, try toggling behavioral
+            if expected_dim > 0 and state.shape[0] != expected_dim:
+                if include_behavioral:
+                    # Remove behavioral
+                    state = np.concatenate([base_features, user_ohe] if num_users > 0 else base_features).astype(np.float32)
+                else:
+                    # Add behavioral
+                    state = np.concatenate([base_features, [is_working, is_awake], user_ohe] if num_users > 0 else [base_features, [is_working, is_awake]]).astype(np.float32)
+
             q_values = agent.get_q_values(state)
             q_matrix[i, j] = q_values[1]
             
