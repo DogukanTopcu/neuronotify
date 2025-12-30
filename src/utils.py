@@ -194,7 +194,7 @@ def plot_behavioral_heatmap(
             else:
                 # POMDP mode usually includes behavioral
                 state_parts.append([is_working, is_awake])
-                
+            
             state = np.concatenate(state_parts).astype(np.float32)
             
             # Final safety check: if dimension mismatch, try toggling behavioral
